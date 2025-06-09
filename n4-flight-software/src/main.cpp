@@ -506,14 +506,17 @@ void readAltimeterTask(void* pvParameters) {
  * 
  *******************************************************************************/
 void readGPSTask(void* pvParameters){
-    float latitude, longitude, g_altitude;
+    float latitude, longitude, g_altitude, g_time;
 
     gps_type_t gps_data_lcl;
 
     while(1){
         if(gpsSerial.available() > 0) {
             gps.encode(gpsSerial.read());
-
+            /*get GPS time */
+            if(gps.time.isValid()) {
+                g_time = gps.time.value(); // decode this time value post flight - write a script for that
+            }
             /* get GPS coordinates */
             if(gps.location.isValid()) {
                 latitude = gps.location.lat();
@@ -531,6 +534,7 @@ void readGPSTask(void* pvParameters){
         gps_packet.latitude = latitude;
         gps_packet.longitude = longitude;
         gps_packet.gps_altitude = g_altitude;
+        gps_data.time = g_time;
     }
 }
 
@@ -553,8 +557,31 @@ float kalmanFilter(float z) {
  * 
  */
 void kalmanFilterTask(void* pvParameters) {
+    telemetry_type_t kalman_data_lcl;
+    float filtered_altitude = 0.0;
     
     while (1) {
+        // Receive altitude data from the queue
+        if(xQueueReceive(kalman_filter_queue_handle, &kalman_data_lcl, portMAX_DELAY) == pdTRUE) {
+            
+            // Apply Kalman filter to the raw altitude reading
+            filtered_altitude = kalmanFilter(altimeter_packet.rel_altitude);
+            
+            // Update the altimeter packet with filtered value
+            altimeter_packet.filtered_altitude = filtered_altitude;
+            
+            // // Optional: Send filtered data to other queues if needed
+            // kalman_data_lcl.alt_data.rel_altitude = filtered_altitude;
+            
+            // You could send the filtered data to other tasks
+            // xQueueSend(telemetry_data_queue_handle, &kalman_data_lcl, 0);
+            
+            #if DEBUG_KALMAN_FILTER
+                debug("Raw Alt: "); debug(altimeter_packet.rel_altitude);
+                debug(" | Filtered Alt: "); debugln(filtered_altitude);
+            #endif
+        }
+        
         vTaskDelay(CONSUME_TASK_DELAY/portTICK_PERIOD_MS);
     }
 }
@@ -810,6 +837,10 @@ void MQTT_TransmitTelemetry(void* pvParameters) {
     // variable to store the received packet to transmit
     telemetry_type_t telemetry_received_packet;
 
+    uint8_t pyro1_state = 1;
+    uint8_t pyro2_state = 1;
+    float battery_voltage = 21.09;
+
     while(1) {
 
         // receive from telemetry queue
@@ -839,39 +870,187 @@ void MQTT_TransmitTelemetry(void* pvParameters) {
          * relative_altitude
          */
         sprintf(telemetry_packet_buffer,
-                "%d,%d,%d,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.4f,%.4f,%.2f,%.2f,%.2f,%.2f\n",
-
-                telemetry_received_packet.record_number,
-                telemetry_received_packet.operation_mode,
-                telemetry_received_packet.state,
-                telemetry_received_packet.acc_data.ax,
-                telemetry_received_packet.acc_data.ay,
-                telemetry_received_packet.acc_data.az,
-                telemetry_received_packet.acc_data.pitch,
-                telemetry_received_packet.acc_data.roll,
-                telemetry_received_packet.gyro_data.gx,
-                telemetry_received_packet.gyro_data.gy,
-                telemetry_received_packet.gyro_data.gz,
-                gps_packet.latitude,
-                gps_packet.longitude,
-                gps_packet.gps_altitude,
-                altimeter_packet.pressure,
-                altimeter_packet.temperature,
-                altimeter_packet.rel_altitude
+                // "%d,%d,%d,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.4f,%.4f,%.2f,%.2f,%.2f,%.2f\n",
+                "%i,%i,%i,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.8f,%.8f,%.2f,%.X,%.2f,%.2f,%.2f,%.2f,%i,%i,%.2f\n",
+                
+                telemetry_received_packet.record_number, //0
+                telemetry_received_packet.operation_mode, //1
+                telemetry_received_packet.state, //2
+                telemetry_received_packet.acc_data.ax, //3
+                telemetry_received_packet.acc_data.ay, //4
+                telemetry_received_packet.acc_data.az, //5
+                telemetry_received_packet.acc_data.pitch, //6
+                telemetry_received_packet.acc_data.roll, //7
+                telemetry_received_packet.gyro_data.gx, //8
+                telemetry_received_packet.gyro_data.gy, //9
+                telemetry_received_packet.gyro_data.gz, //10
+                gps_packet.latitude, //11
+                gps_packet.longitude, //12
+                gps_packet.gps_altitude, //13
+                gps_data.time,//14
+                altimeter_packet.pressure, //15
+                altimeter_packet.temperature, //16
+                altimeter_packet.rel_altitude, //17
+                // telemetry_received_packet.alt_data.AGL,//16
+                altimeter_packet.velocity,//18
+                pyro1_state,//telemetry_data_receive.chute_state.pyro1_state,//19
+                pyro2_state,//telemetry_data_receive.chute_state.pyro2_state,//20
+                battery_voltage//telemetry_data_receive.battery_voltage//21
         );
 
         /* Send to MQTT topic  */
-        // if(client.publish(MQTT_TOPIC, telemetry_packet_buffer) ) {
-        //     debugln("[+]Data sent");
-        // } else {
-        //     debugln("[-]Data not sent");
-        // }
+        if(client.publish(MQTT_TELEMETRY_TOPIC, telemetry_packet_buffer) ) {
+            debugln("[+]Data sent");
+        } else {
+            debugln("[-]Data not sent");
+        }
 
-        client.publish(MQTT_TELEMETRY_TOPIC, telemetry_packet_buffer);
+        // client.publish(MQTT_TELEMETRY_TOPIC, telemetry_packet_buffer);
     }
 
     vTaskDelay(CONSUME_TASK_DELAY/ portTICK_PERIOD_MS);
 }
+
+
+// void MQTT_TransmitTelemetry(void* pvParameters){
+//     /* This function sends data to the ground station */
+
+//      /*  create two pointers to the data structures to be transmitted */
+
+//     // constexpr int INITIAL_BUFFER_SIZE = 512;  // typical buffer size of telemetry packet is 450 ~ 500 bytes
+//     // char telemetry_data[INITIAL_BUFFER_SIZE];
+//     // static char telemetry_data[512];
+//     telemetry_type_t telemetry_received_packet;
+
+
+//     struct Telemetry_Data telemetry_data_receive;
+//     // struct Acceleration_Data gyroscope_data_receive;
+//     // struct Altimeter_Data altimeter_data_receive;
+//     // struct GPS_Data gps_data_receive;
+//     // int32_t flight_state_receive;
+//     uint8_t pyro1_state = 1;
+//     uint8_t pyro2_state = 1;
+//     float battery_voltage = 21.09;
+
+
+
+//     while(true){
+        
+//         /* receive data into respective queues */
+//         if(xQueuePeek(telemetry_data_queue_handle, &telemetry_data_receive, portMAX_DELAY) == pdPASS){  // should telemetry values be in struct format?
+//             debugln("[+]Telemetry data ready for sending ");
+            
+//             // parse data in json format to telemetry_data packet
+//             // Example output -> { "id": 123, "state": 1, "operation_mode": 2, 
+//             // "acc_data": { "ax": 1.23, "ay": 4.56, "az": 7.89, "pitch": 10.11, "roll": 12.13 }, 
+//             // "gyro_data": { "gx": 14.15, "gy": 16.17, "gz": 18.19 }, 
+//             // "gps_data": { "latitude": 20.2, "longitude": 22.2, "gps_altitude": 24.23, "time": 25 }, 
+//             // "alt_data": { "pressure": 26.24, "temperature": 28.25, "AGL": 30.26, "velocity": 32.27 }, 
+//             // "chute_state": { "pyro1_state": 1, "pyro2_state": 0 }, "battery_voltage": 34.28 }
+
+//             snprintf(telemetry_packet_buffer, sizeof(telemetry_packet_buffer),
+//                 // "%i,%i,%i,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.8f,%.8f,%.2f,%.X,%.2f,%.2f,%.2f,%.2f,%i,%i,%.2f\n",
+//                 "{"
+//                 "\"id\": %i,"
+//                 "\"state\": %i,"
+//                 "\"operation_mode\": %i,"
+//                 "\"acc_data\": {"
+//                     "\"ax\": %.2f,"
+//                     "\"ay\": %.2f,"
+//                     "\"az\": %.2f,"
+//                     "\"pitch\": %.2f,"
+//                     "\"roll\": %.2f"
+//                 "},"
+//                 "\"gyro_data\": {"
+//                     "\"gx\": %.2f,"
+//                     "\"gy\": %.2f,"
+//                     "\"gz\": %.2f"
+//                 "},"
+//                 "\"gps_data\": {"
+//                     "\"latitude\": %.16f,"
+//                     "\"longitude\": %.16f,"
+//                     "\"gps_altitude\": %.2f,"
+//                     "\"time\": %i"
+//                 "},"
+//                 "\"alt_data\": {"
+//                     "\"pressure\": %.2f,"
+//                     "\"temperature\": %.2f,"
+//                     "\"AGL\": %.2f,"
+//                     "\"velocity\": %.2f"
+//                 "},"
+//                 "\"chute_state\": {"
+//                     "\"pyro1_state\": %i,"
+//                     "\"pyro2_state\": %i"
+//                 "},"
+//                 "\"battery_voltage\": %.2f"
+//                 "}\n",
+//                 // telemetry_data_receive.record_number,//0
+//                 // telemetry_data_receive.state, //1
+//                 // telemetry_data_receive.operation_mode, //2
+//                 // telemetry_data_receive.acc_data.ax,//3
+//                 // telemetry_data_receive.acc_data.ay,//4
+//                 // telemetry_data_receive.acc_data.az,//5
+//                 // telemetry_data_receive.acc_data.pitch,//6
+//                 // telemetry_data_receive.acc_data.roll,//7
+//                 // telemetry_data_receive.gyro_data.gx,//8
+//                 // telemetry_data_receive.gyro_data.gy,//9
+//                 // telemetry_data_receive.gyro_data.gz,//10
+//                 // telemetry_data_receive.gps_data.latitude,//11
+//                 // telemetry_data_receive.gps_data.longitude,//12
+//                 // telemetry_data_receive.gps_data.gps_altitude,//13
+//                 // telemetry_data_receive.gps_data.time,//14
+//                 // telemetry_data_receive.alt_data.pressure,//15
+//                 // telemetry_data_receive.alt_data.temperature,//16
+//                 // telemetry_data_receive.alt_data.AGL,//17
+//                 // telemetry_data_receive.alt_data.velocity,//18
+//                 // pyro1_state,//telemetry_data_receive.chute_state.pyro1_state,//19
+//                 // pyro2_state,//telemetry_data_receive.chute_state.pyro2_state,//20
+//                 // battery_voltage//telemetry_data_receive.battery_voltage//21 
+
+//                 telemetry_received_packet.record_number,
+//                 telemetry_received_packet.state,
+//                 telemetry_received_packet.operation_mode,
+//                 telemetry_received_packet.acc_data.ax,
+//                 telemetry_received_packet.acc_data.ay,
+//                 telemetry_received_packet.acc_data.az,
+//                 telemetry_received_packet.acc_data.pitch,
+//                 telemetry_received_packet.acc_data.roll,
+//                 telemetry_received_packet.gyro_data.gx,
+//                 telemetry_received_packet.gyro_data.gy,
+//                 telemetry_received_packet.gyro_data.gz,
+//                 gps_packet.latitude,
+//                 gps_packet.longitude,
+//                 gps_packet.gps_altitude,
+//                 altimeter_packet.pressure,
+//                 altimeter_packet.temperature,
+//                 altimeter_packet.rel_altitude,
+//                 pyro1_state,//telemetry_data_receive.chute_state.pyro1_state,//19
+//                 pyro2_state,//telemetry_data_receive.chute_state.pyro2_state,//20
+//                 battery_voltage//telemetry_data_receive.battery_voltage//21 
+//             );
+            
+//         }else{
+//             debugln("[-]Failed to receive telemetry data");
+//         }
+
+//         if(client.publish(MQTT_TELEMETRY_TOPIC, telemetry_packet_buffer)) {
+//             debugln("[+]Data sent");
+//             // debugln("Message: " + String(telemetry_packet_buffer));
+//         // Add message length verification
+//         // }
+//         // size_t msg_length = strlen(telemetry_packet_buffer);
+//         // if(client.publish(MQTT_TELEMETRY_TOPIC, telemetry_packet_buffer, msg_length, false)) {
+//         //     debugln("[+]Data sent successfully - Length: " + String(msg_length));
+//         //     // Optional: Print the actual message
+//         //     debugln("Message: " + String(telemetry_packet_buffer));
+//         } else{
+//             debugln("[-]Data not sent");
+//         }
+
+//         vTaskDelay(CONSUME_TASK_DELAY/ portTICK_PERIOD_MS);
+//     }
+// }
+
 
 /*!
  * @brief Try reconnecting to MQTT if connection is lost
@@ -1038,7 +1217,7 @@ void xCreateAllTasks() {
 
         #if MQTT
             /* TRANSMIT TELEMETRY DATA */
-            BaseType_t th = xTaskCreatePinnedToCore(MQTT_TransmitTelemetry, "transmit_telemetry", STACK_SIZE*2, NULL, 2, &MQTT_TransmitTelemetryTaskHandle, 1);
+            BaseType_t th = xTaskCreatePinnedToCore(MQTT_TransmitTelemetry, "transmit_telemetry", STACK_SIZE*4, NULL, 2, &MQTT_TransmitTelemetryTaskHandle, 1);
 
             if(th == pdPASS){
                 debugln("[+]MQTT transmit task created OK");
@@ -1125,8 +1304,10 @@ void xCreateAllTasks() {
 
         // resume all tasks after creation
 
-        // delete this task
-        vTaskDelete(NULL);
+        // // delete this task
+        // vTaskDelete(NULL);
+
+        return;
     
     
 }
@@ -1165,7 +1346,7 @@ void setup() {
     SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::INFO, system_log_file, "==CREATING DYNAMIC WIFI==\r\n");
 
     // create and wait for dynamic WIFI connection
-    // initDynamicWIFI(); // TODO - uncomment on live testing and production
+    initDynamicWIFI(); // TODO - uncomment on live testing and production
 
     debugln();
     debugln(F("=============================================="));
@@ -1181,7 +1362,7 @@ void setup() {
     debug("Flash memory init state:"); debugln(flash_init_state);
 
     /* initialize mqtt */
-    //MQTTInit(MQTT_SERVER, MQTT_PORT);
+    MQTTInit(MQTT_SERVER, MQTT_PORT);
 
     /* update the sub-systems init state table */
     // check if BMP init OK
@@ -1320,6 +1501,8 @@ void setup() {
 
     /* buzz to indicate start of setup */
     blocking_buzz(BUZZ_INTERVALS::SETUP_INIT);
+
+    debugln("SETUP COMPLETE");
     
 } /* End of setup */
 

@@ -11,7 +11,7 @@
 /*!< To select the telemetry transfer method used */
 /*!< note: u can use wifi and xbee at the same time, so both of these handles can be set */
 /*!< at the same time */
-#define MQTT 0                                 /*!< set this to 1 if using MQTT for telemetry transfer */
+#define MQTT 1                                 /*!< set this to 1 if using MQTT for telemetry transfer */
 #define XBEE 0                                 /*!< set to 1 if using XBEE for telemetry transfer */
 
 #define BAUDRATE        115200
@@ -21,7 +21,9 @@
 /* debug parameters for use during testing - set to 0 for production */
 #define DEBUGGING 1                           /*!< allow debugging to terminal. Set to 0 pre flight to disable serial terminal printing and improve speed  */
 #define LOG_TO_MEMORY 0                      /*!< allow data logging to memory. Set to 1 to log data to external flash memory. Must be set during flight */
-#define DEBUG_TO_TERMINAL 0                 /*!< allow create task that prints data to terminal. Set to 0 before flight  */
+#define DEBUG_TO_TERMINAL 1                 /*!< allow create task that prints data to terminal. Set to 0 before flight  */
+#define DEBUG_KALMAN_FILTER 1               /*!< allow debug of kalman filter. Set to 0 before flight */
+
 
 #if DEBUGGING
     #define debug(x) Serial.print(x)
@@ -75,7 +77,7 @@
 #define CONSUME_TASK_DELAY    10
 
 /* MQTT constants */
-const char MQTT_SERVER[30] = "192.168.1.125";
+#define MQTT_SERVER "192.168.1.5"
 const char MQTT_TELEMETRY_TOPIC[30] = "n4/flight-computer-1";             /* make this topic unique to every rocket */
 const char MQTT_ARMING_TOPIC[30] = "n4/commands";             /* make this topic unique to every rocket */
 #define MQTT_PORT 1883                              /*!< MQTT broker port */
